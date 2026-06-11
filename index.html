@@ -368,6 +368,9 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--are
     <div id="idxResults" style="display:none">
       <div class="section-divider"><span>Clasificación</span></div>
       <div id="idxBands"></div>
+      <button class="btn btn-primary btn-full" id="idxExportBtn" style="display:none;margin-top:4px;margin-bottom:16px;" onclick="exportIndexExcel()">
+        📥 Exportar Excel con clasificación
+      </button>
     </div>
   </div>
 </div>
@@ -966,10 +969,109 @@ function calcIndex(){
     </div>`;
   }).join('');
 
+  // Guardar globalmente para exportar
+  window._lastScored = scored;
+  window._lastActiveCols = activeCols;
+  window._lastBands = bands;
+
   document.getElementById('idxBands').innerHTML=bandsHTML;
+
+  // Botón exportar
+  document.getElementById('idxExportBtn').style.display='flex';
+
   document.getElementById('idxResults').style.display='block';
   // Scroll a resultados
   document.getElementById('idxResults').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+function exportIndexExcel(){
+  if(!window._lastScored||!window._lastScored.length){showToast('⚠️ Calculá el índice primero');return;}
+
+  const scored     = window._lastScored;
+  const activeCols = window._lastActiveCols;
+  const bands      = window._lastBands;
+  const n          = scored.length;
+
+  // Función para determinar la banda de cada animal
+  function getBandLabel(rank){
+    // rank = posición 0-based
+    for(const b of bands){
+      const from=Math.floor(b.pct[0]*n);
+      const to=Math.ceil(b.pct[1]*n);
+      if(rank>=from&&rank<to)return b.label;
+    }
+    return '';
+  }
+
+  // ── Hoja 1: Ranking completo ──────────────────────────────
+  const headers=[
+    'Ranking',
+    'Clasificación',
+    'Score Índice',
+    idColumn,
+    ...columns.filter(c=>c!==idColumn)
+  ];
+
+  const rows=scored.map((item,i)=>{
+    const a=item.animal;
+    const row={
+      'Ranking':         i+1,
+      'Clasificación':   getBandLabel(i),
+      'Score Índice':    item.score,
+      [idColumn]:        a[idColumn],
+    };
+    columns.filter(c=>c!==idColumn).forEach(c=>{ row[c]=a[c]; });
+    return row;
+  });
+
+  // ── Hoja 2: Resumen por banda ─────────────────────────────
+  const summaryRows=[];
+  bands.forEach(band=>{
+    const from=Math.floor(band.pct[0]*n);
+    const to=Math.ceil(band.pct[1]*n);
+    const members=scored.slice(from,to);
+    if(!members.length)return;
+
+    const summRow={'Banda':band.label,'Cantidad de animales':members.length,'Score promedio':Math.round(members.reduce((s,m)=>s+m.score,0)/members.length*10)/10};
+    activeCols.forEach(col=>{
+      const vals=members.map(m=>parseFloat(m.animal[col])||0);
+      const avg=Math.round(vals.reduce((s,v)=>s+v,0)/vals.length*100)/100;
+      summRow['Prom. '+col.replace(/DEP_?|Rank_?/i,'').replace(/_/g,' ')]=avg;
+    });
+    summaryRows.push(summRow);
+  });
+
+  // ── Hoja 3: Ponderaciones utilizadas ─────────────────────
+  const weightRows=activeCols.map(col=>({
+    'Rasgo':      col,
+    'Peso (%)':   idxConfig[col].weight,
+    'Dirección':  idxConfig[col].dir===1?'Mayor es mejor':'Menor es mejor',
+  }));
+
+  // ── Armar workbook ────────────────────────────────────────
+  const wb=XLSX.utils.book_new();
+
+  const ws1=XLSX.utils.json_to_sheet(rows,{header:headers});
+  // Ancho de columnas hoja 1
+  ws1['!cols']=[{wch:10},{wch:14},{wch:14},...columns.map(()=>({wch:18}))];
+  // Estilo de cabecera (color de fondo azul - solo en xlsx compatible)
+  XLSX.utils.book_append_sheet(wb,ws1,'Ranking completo');
+
+  const ws2=XLSX.utils.json_to_sheet(summaryRows);
+  ws2['!cols']=[{wch:14},{wch:22},{wch:18},...activeCols.map(()=>({wch:18}))];
+  XLSX.utils.book_append_sheet(wb,ws2,'Resumen por banda');
+
+  const ws3=XLSX.utils.json_to_sheet(weightRows);
+  ws3['!cols']=[{wch:24},{wch:12},{wch:22}];
+  XLSX.utils.book_append_sheet(wb,ws3,'Ponderaciones');
+
+  // ── Nombre del archivo con fecha ──────────────────────────
+  const now=new Date();
+  const fecha=`${now.getDate().toString().padStart(2,'0')}${(now.getMonth()+1).toString().padStart(2,'0')}${now.getFullYear()}`;
+  const filename=`AltaGen_Indice_${fecha}.xlsx`;
+
+  XLSX.writeFile(wb,filename);
+  showToast('✅ Excel exportado correctamente');
 }
 
 function toggleBand(id){
